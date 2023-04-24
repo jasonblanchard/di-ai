@@ -16,18 +16,30 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
+	"database/sql"
 	"encoding/csv"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/jasonblanchard/di-ai/db/store"
+	_ "github.com/lib/pq"
+	"github.com/pgvector/pgvector-go"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/tiktoken-go/tokenizer"
 )
 
 type EntryRecord struct {
-	ID   int
-	Text string
+	ID        int32
+	CreatorID string
+	Text      string
+	CreatedAt string
+	UpdatedAt string
 }
 
 // loadCmd represents the load command
@@ -47,7 +59,11 @@ to quickly create a Cobra application.`,
 			return fmt.Errorf("error getting file flag: %w", err)
 		}
 
-		fmt.Println(filePath)
+		dryRunOnly, err := cmd.Flags().GetBool("dry-run")
+
+		if err != nil {
+			return fmt.Errorf("error getting dry-run flag: %w", err)
+		}
 
 		file, err := os.Open(filePath)
 		if err != nil {
@@ -72,6 +88,9 @@ to quickly create a Cobra application.`,
 		for _, record := range records[1:] {
 			id, err := strconv.Atoi(record[0])
 			text := record[1]
+			creatorId := record[2]
+			createdAt := record[3]
+			updatedAt := record[4]
 
 			if err != nil {
 				return fmt.Errorf("error converting ID to int: %w", err)
@@ -86,8 +105,11 @@ to quickly create a Cobra application.`,
 			}
 
 			entryRecords = append(entryRecords, EntryRecord{
-				ID:   id,
-				Text: text,
+				ID:        int32(id),
+				Text:      text,
+				CreatorID: creatorId,
+				CreatedAt: createdAt,
+				UpdatedAt: updatedAt,
 			})
 		}
 
@@ -99,14 +121,103 @@ to quickly create a Cobra application.`,
 
 		fmt.Printf("expected cost: $%v\n", cost)
 
-		// TODO: Count tokens and estimate cost
+		if dryRunOnly {
+			return nil
+		}
 
-		// For each record
-		// create embedding
-		// load id, embedding and full text into vector DB
+		ctx := context.Background()
 
-		// TODO: Error handling - what happens if it fails mid-way through?
-		// Check to see if we've created the embedding first before creating, probably
+		db, err := sql.Open("postgres", "user=postgres dbname=postgres sslmode=disable host=0.0.0.0 password=sekret") // TODO: Get from env
+		if err != nil {
+			return fmt.Errorf("error connecting to database: %w", err)
+		}
+
+		queries := store.New(db)
+
+		key := viper.GetString("openaikey")
+		openaiclient := openai.NewClient(key)
+
+		// Get list of records already loaded
+		loadedIds, err := queries.GetLoadedEntryIds(ctx)
+
+		if err != nil {
+			return fmt.Errorf("error getting entry IDs: %w", err)
+		}
+
+		for _, record := range entryRecords {
+			// TODO: If not in list of records already loaded
+			if contains(loadedIds, record.ID) {
+				fmt.Printf("Skipping record %v\n", record.ID)
+				continue
+			}
+
+			fmt.Printf("Loading record %v...\n", record.ID)
+
+			text := strings.ReplaceAll(record.Text, "\n", " ")
+
+			if text == "" {
+				fmt.Printf("Skipping %v due to empty string\n", text)
+				continue
+			}
+
+			response, err := openaiclient.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+				Model: openai.AdaEmbeddingV2,
+				Input: []string{text},
+			})
+
+			if err != nil {
+				return fmt.Errorf("error creating embedding: %w", err)
+			}
+
+			embedding := pgvector.NewVector(response.Data[0].Embedding)
+
+			layout := "2006-01-02 15:04:05.000"
+			createdAt, err := time.Parse(layout, record.CreatedAt)
+
+			if err != nil {
+				return fmt.Errorf("error parsing created at time: %w", err)
+			}
+
+			var updatedAt time.Time
+
+			if record.UpdatedAt != "" {
+				updatedAt, err = time.Parse(layout, record.UpdatedAt)
+				if err != nil {
+					return fmt.Errorf("error parsing updatedAt at time: %w", err)
+				}
+			}
+
+			var sqlUpdatedAt sql.NullTime
+
+			if updatedAt.IsZero() {
+				sqlUpdatedAt = sql.NullTime{
+					Valid: false,
+				}
+			} else {
+				sqlUpdatedAt = sql.NullTime{
+					Valid: true,
+					Time:  updatedAt,
+				}
+			}
+
+			err = queries.LoadEntry(ctx, store.LoadEntryParams{
+				ID: int32(record.ID),
+				Text: sql.NullString{
+					Valid:  true,
+					String: record.Text,
+				},
+				CreatorID: record.CreatorID,
+				CreatedAt: createdAt,
+				UpdatedAt: sqlUpdatedAt,
+				Embedding: embedding,
+			})
+
+			if err != nil {
+				return fmt.Errorf("error loading entry into database: %w", err)
+			}
+
+			fmt.Printf("Loaded record %v...\n", record.ID)
+		}
 
 		return nil
 	},
@@ -125,4 +236,14 @@ func init() {
 	// is called directly, e.g.:
 	// loadCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 	loadCmd.Flags().StringP("file", "f", "", "CSV file with entries")
+	loadCmd.Flags().BoolP("dry-run", "d", false, "get statistics but don't actually execute it")
+}
+
+func contains[T comparable](slice []T, value T) bool {
+	for _, item := range slice {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }

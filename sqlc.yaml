@@ -1,0 +1,16 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "db/query.sql"
+    schema: "db/migrations"
+    gen:
+      go:
+        package: "store"
+        out: "db/store"
+overrides:
+  go:
+    overrides:
+      - column: "entries.embedding"
+        go_type:
+          import: "github.com/pgvector/pgvector-go"
+          type: "Vector"
