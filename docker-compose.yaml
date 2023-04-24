@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  postgres:
+    image: ankane/pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=sekret
+    volumes:
+       - db-data:/var/lib/postgresql/data
+volumes:
+  db-data:
