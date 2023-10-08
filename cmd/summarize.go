@@ -19,13 +19,18 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
+	"github.com/briandowns/spinner"
 	"github.com/jasonblanchard/di-ai/db/store"
 	"github.com/pgvector/pgvector-go"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/tiktoken-go/tokenizer"
 )
+
+var MAX_TOKEN_THRESHOLD int = 1500
 
 // summarizeCmd represents the summarize command
 var summarizeCmd = &cobra.Command{
@@ -52,6 +57,9 @@ to quickly create a Cobra application.`,
 		openaiclient := openai.NewClient(key)
 
 		ctx := context.Background()
+
+		loadingSpinner := spinner.New(spinner.CharSets[26], 250*time.Millisecond)
+		loadingSpinner.Start()
 
 		embeddingResponse, err := openaiclient.CreateEmbeddings(ctx, openai.EmbeddingRequest{
 			Model: openai.AdaEmbeddingV2,
@@ -81,22 +89,39 @@ to quickly create a Cobra application.`,
 		}
 
 		var context string
+		var tokenSum int
 
-		// TODO: Limit size
+		tokenEnc, err := tokenizer.ForModel(tokenizer.TextEmbeddingAda002)
+		if err != nil {
+			return fmt.Errorf("error creating tokenizer: %w", err)
+		}
+
 		for _, result := range results {
-			context = context + result.Text.String + "\n\n"
+			if tokenSum > MAX_TOKEN_THRESHOLD {
+				continue
+			}
+
+			// TODO: Include created at date
+			context = context + "on " + result.CreatedAt.String() + ": " + result.Text.String + "\n\n"
+			_, tokens, err := tokenEnc.Encode(context)
+
+			if err != nil {
+				return fmt.Errorf("error encoding token: %w", err)
+			}
+
+			tokenSum = tokenSum + len(tokens)
 		}
 
 		promptResponse, err := openaiclient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo,
+			Model: openai.GPT4,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
-					Content: fmt.Sprintf("You are a neutral agent helping to summarize content from a journal. \n Here are some posts to give you context: \n %s", context),
+					Content: fmt.Sprintf("You are helping me remember things I've said. Here are some things I've written about: \n %s", context),
 				},
 				{
 					Role:    openai.ChatMessageRoleUser,
-					Content: fmt.Sprintf("Using only the context above, Write a summary about %s", query),
+					Content: fmt.Sprintf("Using only the context above, summarize what I said about %s. Attribute it to me", query),
 				},
 			},
 		})
@@ -104,6 +129,8 @@ to quickly create a Cobra application.`,
 		if err != nil {
 			return fmt.Errorf("error getting chat completion: %w", err)
 		}
+
+		loadingSpinner.Stop()
 
 		content := promptResponse.Choices[0].Message.Content
 

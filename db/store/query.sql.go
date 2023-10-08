@@ -41,7 +41,7 @@ func (q *Queries) GetLoadedEntryIds(ctx context.Context) ([]int32, error) {
 }
 
 const listEntriesByCosineSimilarity = `-- name: ListEntriesByCosineSimilarity :many
-SELECT id, text, CAST(1 - (embedding <=> $1) AS FLOAT(32)) AS cosine_similarity FROM entries ORDER BY cosine_similarity DESC limit $2
+SELECT id, created_at, text, CAST(1 - (embedding <=> $1) AS FLOAT(32)) AS cosine_similarity FROM entries ORDER BY cosine_similarity DESC limit $2
 `
 
 type ListEntriesByCosineSimilarityParams struct {
@@ -51,6 +51,7 @@ type ListEntriesByCosineSimilarityParams struct {
 
 type ListEntriesByCosineSimilarityRow struct {
 	ID               int32
+	CreatedAt        time.Time
 	Text             sql.NullString
 	CosineSimilarity float64
 }
@@ -64,7 +65,12 @@ func (q *Queries) ListEntriesByCosineSimilarity(ctx context.Context, arg ListEnt
 	var items []ListEntriesByCosineSimilarityRow
 	for rows.Next() {
 		var i ListEntriesByCosineSimilarityRow
-		if err := rows.Scan(&i.ID, &i.Text, &i.CosineSimilarity); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.Text,
+			&i.CosineSimilarity,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

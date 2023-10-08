@@ -84,6 +84,7 @@ to quickly create a Cobra application.`,
 			fmt.Println("")
 			fmt.Println("===========================")
 			fmt.Println("")
+			fmt.Println(result.CreatedAt.String())
 			fmt.Println(result.Text.String)
 			fmt.Printf("(%v)", result.CosineSimilarity)
 		}
